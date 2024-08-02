@@ -1,0 +1,127 @@
+# Import necessary libraries
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.metrics import mean_squared_error
+from sklearn.model_selection import GridSearchCV
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense
+from tensorflow.keras.preprocessing.sequence import TimeseriesGenerator
+from pandas.tseries.holiday import USFederalHolidayCalendar as calendar
+
+# Load the dataset
+df = pd.read_csv('/content/train.csv')
+
+
+
+# Inspect the data
+print(df.head())
+print(df.info())
+print(df.isnull().sum())
+print(df.describe())
+
+# Exploratory Data Analysis (EDA)
+# Plot sales for a specific item ID
+item_id = df['Item Id'].unique()[0]  # Example item ID
+item_data = df[df['Item Id'] == item_id]
+plt.figure(figsize=(12, 6))
+plt.plot(item_data['date'], item_data['units'], marker='o', label='Units Sold')
+plt.title(f'Units Sold for Item ID {item_id}')
+plt.xlabel('Date')
+plt.ylabel('Units Sold')
+plt.legend()
+plt.show()
+
+# Correlation Analysis
+corr = df[['units', 'ad_spend', 'unit_price']].corr()
+plt.figure(figsize=(10, 8))
+sns.heatmap(corr, annot=True, cmap='coolwarm')
+plt.title('Correlation Heatmap')
+plt.show()
+
+
+
+# External Features (e.g., holidays)
+cal = calendar()
+holidays = cal.holidays(start=df['date'].min(), end=df['date'].max())
+df['is_holiday'] = df['date'].isin(holidays).astype(int)
+
+# Handle missing values
+df.fillna(method='ffill', inplace=True)
+
+# Prepare data for modeling
+item_id = df['Item Id'].unique()[0]  # Example item ID
+item_data = df[df['Item Id'] == item_id]
+
+# Split data into training and test sets
+train_size = int(len(item_data) * 0.8)
+train_data = item_data[:train_size]
+test_data = item_data[train_size:]
+
+X_train = train_data[['ad_spend', 'unit_price'  ]]
+y_train = train_data['units']
+X_test = test_data[['ad_spend', 'unit_price' ]]
+y_test = test_data['units']
+
+# Random Forest Model
+rf_model = RandomForestRegressor(n_estimators=100)
+rf_model.fit(X_train, y_train)
+rf_predictions = rf_model.predict(X_test)
+
+# Evaluate Random Forest model
+rf_mse = mean_squared_error(y_test, rf_predictions)
+print(f'Random Forest MSE: {rf_mse}')
+
+# Hyperparameter Tuning for Random Forest
+param_grid = {
+    'n_estimators': [50, 100, 200],
+    'max_depth': [10, 20, 30]
+}
+grid_search = GridSearchCV(estimator=RandomForestRegressor(), param_grid=param_grid, cv=3, scoring='neg_mean_squared_error')
+grid_search.fit(X_train, y_train)
+best_params = grid_search.best_params_
+print("Best Parameters for Random Forest:", best_params)
+
+# LSTM Model Preparation
+def prepare_lstm_data(data, feature_cols, target_col, sequence_length):
+    data = data[[feature_cols + [target_col]]].values
+    X, y = [], []
+    for i in range(len(data) - sequence_length):
+        X.append(data[i:i + sequence_length, :-1])
+        y.append(data[i + sequence_length, -1])
+    return np.array(X), np.array(y)
+
+sequence_length = 10
+X_train_lstm, y_train_lstm = prepare_lstm_data(train_data, ['ad_spend', 'unit_price', 'day_of_week', 'month', 'rolling_mean_7', 'units_lag_7'], 'units', sequence_length)
+X_test_lstm, y_test_lstm = prepare_lstm_data(test_data, ['ad_spend', 'unit_price', 'day_of_week', 'month', 'rolling_mean_7', 'units_lag_7'], 'units', sequence_length)
+
+# Build and train LSTM model
+lstm_model = Sequential()
+lstm_model.add(LSTM(50, activation='relu', input_shape=(X_train_lstm.shape[1], X_train_lstm.shape[2])))
+lstm_model.add(Dense(1))
+lstm_model.compile(optimizer='adam', loss='mse')
+
+lstm_model.fit(X_train_lstm, y_train_lstm, epochs=50, verbose=1)
+
+# Make LSTM predictions
+lstm_predictions = lstm_model.predict(X_test_lstm)
+
+# Prepare results for submission
+rf_submission = pd.DataFrame({
+    'Item Id': test_data['Item Id'].iloc[len(test_data) - len(rf_predictions):],
+    'Date': test_data['date'].iloc[len(test_data) - len(rf_predictions):],
+    'Predicted Units': rf_predictions
+})
+rf_submission.to_csv('/content/sample_submission.csv', index=False)
+
+lstm_submission = pd.DataFrame({
+    'Item Id': test_data['Item Id'].iloc[sequence_length:],
+    'Date': test_data['date'].iloc[sequence_length:],
+    'Predicted Units': lstm_predictions.flatten()
+})
+lstm_submission.to_csv('lstm_predictions.csv', index=False)
+
+# Save notebook and PDF versions manually
+# Use Jupyter Notebook's "Save as" option to save as .ipynb and .pdf
